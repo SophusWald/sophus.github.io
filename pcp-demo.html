@@ -4,6 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>A PCP verifier for graph 3-coloring</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml.js"></script>
   <style>
     body {
       max-width: 760px;
@@ -71,7 +80,7 @@
     <select id="strategy">
       <option value="closest">closest 3-coloring</option>
       <option value="four-color">closest 4-coloring</option>
-      <option value="monochromatic">give every vertex the same color</option>
+      <option value="corrupt-encoding">corrupt the encoding on selected entries</option>
     </select>
     <button id="new-graph" type="button">Generate graph</button>
   </p>
@@ -257,33 +266,51 @@
       passes, but A<sub>0</sub> rejects when it finds a vertex carrying the
       forbidden fourth color.
     </dd>
-    <dt><b>Monochromatic claim</b></dt>
+    <dt><b>Corrupt the encoding on selected entries</b></dt>
     <dd>
-      Give every vertex the same allowed color. The A<sub>0</sub> valid-color
-      check passes, but every sampled edge contradicts B<sub>0</sub>.
+      Start with the closest 3-coloring proof, but flip the bits at a fixed
+      small fraction of positions in its Hadamard-encoded oracle tables. In
+      this browser model, 8% of the encoded positions are corrupted. A
+      degree-3 Hadamard test rejects when its random spot-check encounters one
+      of these positions. If the corruption is missed, the B<sub>0</sub> test
+      may still find the bad edge in the underlying closest 3-coloring.
     </dd>
   </dl>
 
   <details>
     <summary>How does the encoding work?</summary>
     <p>
-      All entries in the oracles represent elements of F_q, but if q is a large prime it takes more than a constant amount of bits to represent them, 
-        which is more than the verifier can read. Furthermore in the lines tables oracles, each entry represent superconstant amount of F_q elements.
-        To avoid reading so many entries, we encode our oracles, so the verifier, can use its randomness to only query a constant amount of information about the entries.
-      To encode the coloring, we use the 3-Hadamard encoding. 
-      Note that every entry of &chi; is an element of F_q, for q=2^t
-      We can identify this with (F_2)^t, so that every color is a F_2-vector of length t. 
-      We can then evaluate this vector on every polynomial F_2[X_1,\ldots, X_t] \to F_2 of degree at most 3.
-
-      Note that this is a code with constant relative distance, so we distinguish two entries of F_q, 
-      only using a constant amount of bits. 
-
-      For the lines tables, each entry represents a univariate degree-d polynomial in F_q for a large d. To compensate, 
-      we encode each polynomial, as a multivariate constant degree polynomial. 
-      The verifier can then use low-degree tests and local correction for low-degree polynomials to gain information about these using only constant queries. 
-      We can then like we did for &chi;, Furthermore encode each F_q entry using the Hadamard encoding. 
-      
-      This encodings together allow us to do all the test with only constant queries with only a slight increase in randomness.
+      Before encoding, the entries of the oracles are elements of
+      \(\mathbb{F}_q\), where \(q=2^t\). One field element therefore takes
+      \(t=\log_2 q\) bits to write down, which is already more than the
+      verifier is allowed to read. An entry of a line-table oracle contains
+      even more information: it describes a univariate polynomial of degree
+      \(D\) over \(\mathbb{F}_q\).
+    </p>
+    <p>
+      The four main algebraic objects \(\chi,\chi',A_0,B_0\) are encoded using
+      the degree-3 Hadamard encoding. Fix an \(\mathbb{F}_2\)-linear
+      identification \(\rho:\mathbb{F}_q\to\mathbb{F}_2^t\). For a field
+      element \(a\in\mathbb{F}_q\), its encoding records
+      \(P(\rho(a))\) for every polynomial
+      \(P\in\mathcal{P}_3(t,\mathbb{F}_2)\). Thus every encoded position is a
+      single bit, even though it represents information about an element of
+      \(\mathbb{F}_q\).
+    </p>
+    <p>
+      This code has constant relative distance. Consequently, the verifier can
+      distinguish two different field elements and test whether a submitted
+      table has the required Hadamard form by reading only a constant number
+      of bits.
+    </p>
+    <p>
+      For the line tables, the coefficient vector of each degree-\(D\)
+      univariate polynomial is first transformed into a constant-degree
+      multivariate polynomial using the map \(\Psi\). The values of that
+      polynomial are then degree-3 Hadamard encoded in the same way. This lets
+      the verifier combine low-degree tests and local correction with only a
+      constant number of oracle queries, at the cost of a small increase in
+      randomness.
     </p>
   </details>
 
@@ -292,6 +319,7 @@
 
     let N = 9;
     const ROUNDS = 100;
+    const ENCODING_CORRUPTION_RATE = 0.08;
     const COLORS = ["#377eb8", "#e41a1c", "#4daf4a", "#984ea3"];
     const svg = document.getElementById("graph");
     const graphStatus = document.getElementById("graph-status");
@@ -413,13 +441,16 @@
       } else if (strategySelect.value === "four-color") {
         graph.coloring = graph.fourColoring.slice();
         graph.strategy = "four-color";
-      } else if (strategySelect.value === "monochromatic") {
-        graph.coloring = Array(N).fill(0);
-        graph.strategy = "monochromatic";
+      } else if (strategySelect.value === "corrupt-encoding") {
+        graph.coloring = graph.closestColoring.slice();
+        graph.strategy = "corrupt-encoding";
       } else {
         graph.coloring = graph.closestColoring.slice();
         graph.strategy = "closest";
       }
+      graph.encodingCorruptionRate = graph.strategy === "corrupt-encoding"
+        ? ENCODING_CORRUPTION_RATE
+        : 0;
       graph.conflicts = conflictEdges(graph.edges, graph.coloring);
       graph.invalidVertices = graph.coloring
         .map((color, vertex) => color >= 3 ? vertex : -1)
@@ -508,8 +539,8 @@
         proverStatus.innerHTML = `<span class="pass"><b>Honest prover.</b></span> It constructs all eight oracles from a genuine proper 3-coloring.`;
       } else if (graph.strategy === "four-color") {
         proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: forbidden fourth color.</b></span> The claimed coloring is proper, but ${graph.invalidVertices.length} vertices use a fourth color that A<sub>0</sub> is supposed to rule out.`;
-      } else if (graph.strategy === "monochromatic") {
-        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: monochromatic claim.</b></span> Every vertex receives the same allowed color, so all ${graph.edges.length} edges contradict B<sub>0</sub>.`;
+      } else if (graph.strategy === "corrupt-encoding") {
+        proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: corrupted encoding.</b></span> It starts from the closest 3-coloring proof, then flips bits at a fixed 8% of positions in the Hadamard-encoded oracle tables. The graph picture shows the underlying claimed coloring; the altered encoding entries are not visible.`;
       } else {
         proverStatus.innerHTML = `<span class="fail"><b>Dishonest prover: closest 3-coloring.</b></span> It uses only the allowed colors and has the minimum possible number of monochromatic edges (${graph.conflicts.length}).`;
       }
@@ -534,6 +565,11 @@
       span.className = passed ? "pass" : "fail";
     }
 
+    function encodingCorruptionDetected() {
+      return graph.strategy === "corrupt-encoding"
+        && Math.random() < graph.encodingCorruptionRate;
+    }
+
     async function runVerifier() {
       const thisRun = ++runNumber;
       runButton.disabled = true;
@@ -544,14 +580,19 @@
       resetVerifier();
       drawGraph();
 
-      for (let i = 0; i < 2; i += 1) {
-        if (thisRun !== runNumber) return;
-        const span = document.getElementById(`check-${i}`);
-        span.textContent = " — checking...";
-        span.className = "muted";
-        await wait(400);
-        markCheck(i, true);
-      }
+      const encodingSpan = document.getElementById("check-0");
+      encodingSpan.textContent = " — checking random encoded positions...";
+      encodingSpan.className = "muted";
+      await wait(400);
+      const firstEncodingRejected = encodingCorruptionDetected();
+      markCheck(0, !firstEncodingRejected);
+
+      if (thisRun !== runNumber) return;
+      const lowDegreeSpan = document.getElementById("check-1");
+      lowDegreeSpan.textContent = " — checking...";
+      lowDegreeSpan.className = "muted";
+      await wait(400);
+      markCheck(1, true);
 
       const firstVertex = Math.floor(Math.random() * N);
       const colorSpan = document.getElementById("check-2");
@@ -567,10 +608,13 @@
       finalSpan.textContent = ` — checking edge ${firstEdge[0] + 1}-${firstEdge[1] + 1}...`;
       finalSpan.className = "muted";
       await wait(550);
-      const firstRejected = graph.coloring[firstEdge[0]] === graph.coloring[firstEdge[1]];
-      markCheck(3, !firstRejected);
+      const firstBadEdge = graph.coloring[firstEdge[0]] === graph.coloring[firstEdge[1]];
+      markCheck(3, !firstBadEdge);
 
-      let rejected = firstInvalidColor || firstRejected ? 1 : 0;
+      let encodingRejections = firstEncodingRejected ? 1 : 0;
+      let colorRejections = firstInvalidColor ? 1 : 0;
+      let edgeRejections = firstBadEdge ? 1 : 0;
+      let rejected = firstEncodingRejected || firstInvalidColor || firstBadEdge ? 1 : 0;
       progress.value = 1;
       progress.textContent = `1/${ROUNDS}`;
       progressLabel.textContent = `Round 1 of ${ROUNDS} complete; running the remaining 99 rounds quietly.`;
@@ -579,9 +623,13 @@
       for (let round = 2; round <= ROUNDS; round += 1) {
         const vertex = Math.floor(Math.random() * N);
         const edge = graph.edges[Math.floor(Math.random() * graph.edges.length)];
+        const corruptEncoding = encodingCorruptionDetected();
         const invalidColor = graph.coloring[vertex] >= 3;
         const badEdge = graph.coloring[edge[0]] === graph.coloring[edge[1]];
-        if (invalidColor || badEdge) rejected += 1;
+        if (corruptEncoding) encodingRejections += 1;
+        if (invalidColor) colorRejections += 1;
+        if (badEdge) edgeRejections += 1;
+        if (corruptEncoding || invalidColor || badEdge) rejected += 1;
         progress.value = round;
         progress.textContent = `${round}/${ROUNDS}`;
         if (round % 10 === 0) await wait(12);
@@ -591,7 +639,9 @@
       graphNote.textContent = graph.invalidVertices.length
         ? `The purple vertices use the forbidden fourth color. All edges are nevertheless properly colored.`
         : graph.conflicts.length
-          ? "After the experiment, the prover's monochromatic edges are shown in red."
+          ? graph.strategy === "corrupt-encoding"
+            ? "The underlying closest 3-coloring still has one bad edge, shown in red. The corrupted encoded positions are not visible in the graph."
+            : "After the experiment, the prover's monochromatic edges are shown in red."
           : "Every edge joins vertices of different colors.";
       progressLabel.textContent = `${ROUNDS} of ${ROUNDS} rounds complete; ${rejected} rejected.`;
 
@@ -599,7 +649,10 @@
         result.innerHTML = `<span class="pass"><b>ACCEPT.</b></span> The honest proof passed all ${ROUNDS} randomized rounds.`;
         result.className = "";
       } else if (rejected > 0) {
-        result.innerHTML = `<span class="fail"><b>REJECT.</b></span> ${rejected} of ${ROUNDS} randomized rounds found a contradiction. One failed round is enough to reject the proof.`;
+        const corruptionDetails = graph.strategy === "corrupt-encoding"
+          ? ` Hadamard tests found corrupted encoded positions in ${encodingRejections} rounds, and B<sub>0</sub> checks found the bad edge in ${edgeRejections} rounds; a round may find both.`
+          : "";
+        result.innerHTML = `<span class="fail"><b>REJECT.</b></span> ${rejected} of ${ROUNDS} randomized rounds found a contradiction. One failed round is enough to reject the proof.${corruptionDetails}`;
         result.className = "";
       } else {
         result.innerHTML = `<b>NOT CAUGHT.</b> All ${ROUNDS} sampled rounds passed even though the proof is dishonest. Randomized verification can miss a lie in a finite run.`;
